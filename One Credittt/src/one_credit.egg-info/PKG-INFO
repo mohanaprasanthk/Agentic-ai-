@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: one-credit
+Version: 0.1.0
+Summary: Python backend domain models for the One Credit project
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: pydantic<3.0,>=2.7
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+
+# One Credit
+
+This project contains the Python backend domain models for the One Credit application.
+
+The current implementation focuses on the core domain models:
+
+- Agent
+- Resource
+- Request
+- Proposal
+
+No frontend code is included yet.
