@@ -6,10 +6,11 @@ from one_credit.architecture import (
     DecentralizedArchitecture,
     HierarchicalArchitecture,
     ParallelArchitecture,
+    PeerToPeerArchitecture,
     SequentialArchitecture,
 )
 from one_credit.blackboard import Blackboard
-from one_credit.models import Agent, Proposal, Request, Resource
+from one_credit.models import Agent, Message, MessageType, Proposal, Request, Resource
 from one_credit.negotiation import (
     ACCEPT,
     AGREEMENT,
@@ -34,10 +35,13 @@ __all__ = [
     "COUNTEROFFER",
     "DecentralizedArchitecture",
     "HierarchicalArchitecture",
+    "Message",
+    "MessageType",
     "NegotiationEngine",
     "NegotiationMessage",
     "NegotiationStep",
     "ParallelArchitecture",
+    "PeerToPeerArchitecture",
     "PROPOSAL",
     "Proposal",
     "REJECT",

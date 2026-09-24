@@ -6,7 +6,7 @@ from collections import defaultdict
 from typing import Any
 
 from one_credit.blackboard import Blackboard
-from one_credit.models import Agent, Proposal, Request, Resource
+from one_credit.models import Agent, Message, MessageType, Proposal, Request, Resource
 from one_credit.negotiation import (
     ACCEPT,
     AGREEMENT,
@@ -1027,6 +1027,278 @@ class BlackboardArchitecture:
 
         self.record_negotiation_event("rejection", request_id=request.id, proposal_id=proposal.id, actor_id=proposal.agent_id, content="Negotiation failed.")
         return {"status": "failed", "request_id": request.id, "proposal_id": proposal.id, "allocation": None, "reason": "Negotiation failed."}
+
+
+class PeerToPeerArchitecture:
+    """Direct agent-to-agent negotiation without a central coordinator."""
+
+    def __init__(self, *, strategy: Any | None = None) -> None:
+        self.agents: dict[str, Agent] = {}
+        self.peers: dict[str, Agent] = self.agents
+        self.resources: dict[str, Resource] = {}
+        self.requests: dict[str, Request] = {}
+        self.proposals: dict[str, Proposal] = {}
+        self.allocations: dict[str, dict[str, Any]] = {}
+        self.resource_allocations: dict[str, str] = {}
+        self.resource_conflicts: dict[str, dict[str, Any]] = {}
+        self.negotiation_engine = NegotiationEngine(strategy=strategy or UtilityMaximizingStrategy())
+        self.negotiation_state: dict[str, dict[str, Any]] = {}
+        self.message_history: list[Message] = []
+        self.message_ids: set[str] = set()
+        self.negotiation_events: list[dict[str, Any]] = []
+
+    def register_peer(self, agent: Agent) -> Agent:
+        self.agents[agent.id] = agent
+        return agent
+
+    def register_agent(self, agent: Agent) -> Agent:
+        return self.register_peer(agent)
+
+    def register_resource(self, resource: Resource) -> Resource:
+        self.resources[resource.id] = resource
+        return resource
+
+    def get_peer(self, agent_id: str) -> Agent | None:
+        return self.agents.get(agent_id)
+
+    def get_agent(self, agent_id: str) -> Agent | None:
+        return self.get_peer(agent_id)
+
+    def create_request(self, request: Request) -> Request:
+        self.requests[request.id] = request
+        return request
+
+    def get_request(self, request_id: str) -> Request | None:
+        return self.requests.get(request_id)
+
+    def create_proposal(self, proposal: Proposal) -> Proposal:
+        self.proposals[proposal.id] = proposal
+        return proposal
+
+    def get_proposal(self, proposal_id: str) -> Proposal | None:
+        return self.proposals.get(proposal_id)
+
+    def discover_peers_for_request(self, request: Request) -> list[Agent]:
+        if not self.agents:
+            return []
+        candidates = list(self.agents.values())
+        resource_names = {item.lower() for item in request.required_resources}
+        peers: list[Agent] = []
+        for agent in candidates:
+            token_set = {item.lower() for item in agent.capabilities} | {agent.type.lower()}
+            if bool(resource_names & token_set) or agent.id == request.requester_id:
+                peers.append(agent)
+        return peers or candidates
+
+    def _priority_score(self, request: Request) -> int:
+        weights = {"critical": 5, "high": 4, "medium": 3, "normal": 2, "low": 1}
+        return weights.get(str(request.priority).lower(), 2)
+
+    def _validate_sender_receiver(self, sender: str, receiver: str) -> None:
+        if sender not in self.agents:
+            raise KeyError(f"Unknown sender: {sender}")
+        if receiver not in self.agents:
+            raise KeyError(f"Unknown receiver: {receiver}")
+
+    def _validate_message(self, message: Message) -> None:
+        if message.message_id in self.message_ids:
+            raise ValueError(f"Duplicate message detected: {message.message_id}")
+        if message.sender not in self.agents or message.receiver not in self.agents:
+            raise ValueError("Message sender and receiver must be registered peers")
+        if message.message_type not in {member.value for member in MessageType}:
+            raise ValueError(f"Invalid message type: {message.message_type}")
+
+    def send_message(
+        self,
+        *,
+        sender: str,
+        receiver: str,
+        message_type: str | MessageType,
+        payload: dict[str, Any],
+        message_id: str | None = None,
+    ) -> Message:
+        self._validate_sender_receiver(sender, receiver)
+        normalized = MessageType(message_type) if isinstance(message_type, str) else message_type
+        message = Message(
+            message_id=message_id or f"msg-{len(self.message_history) + 1}-{sender}-{receiver}",
+            sender=sender,
+            receiver=receiver,
+            message_type=normalized,
+            payload=payload,
+        )
+        self._validate_message(message)
+        self.message_ids.add(message.message_id)
+        self.message_history.append(message)
+        self.negotiation_events.append({"type": message.message_type, "message_id": message.message_id, "sender": sender, "receiver": receiver, "payload": payload})
+        return message
+
+    def process_message(self, message: Message) -> Message:
+        self._validate_message(message)
+        self.message_ids.add(message.message_id)
+        self.message_history.append(message)
+        self.negotiation_events.append({"type": message.message_type, "message_id": message.message_id, "sender": message.sender, "receiver": message.receiver, "payload": message.payload})
+        return message
+
+    def send_proposal(self, *, sender_id: str, receiver_id: str, request: Request, proposal: Proposal) -> Message:
+        message = self.send_message(
+            sender=sender_id,
+            receiver=receiver_id,
+            message_type=MessageType.PROPOSAL,
+            payload={
+                "request_id": request.id,
+                "proposal_id": proposal.id,
+                "summary": proposal.summary,
+                "price": proposal.price,
+                "estimated_duration": proposal.estimated_duration,
+            },
+            message_id=f"proposal-{request.id}-{sender_id}-{receiver_id}",
+        )
+        self.proposals[proposal.id] = proposal
+        return message
+
+    def send_counteroffer(
+        self,
+        *,
+        sender_id: str,
+        receiver_id: str,
+        request_id: str,
+        proposal_id: str,
+        price: float,
+        content: str,
+    ) -> Message:
+        return self.send_message(
+            sender=sender_id,
+            receiver=receiver_id,
+            message_type=MessageType.COUNTEROFFER,
+            payload={
+                "request_id": request_id,
+                "proposal_id": proposal_id,
+                "price": price,
+                "content": content,
+            },
+            message_id=f"counteroffer-{request_id}-{sender_id}-{receiver_id}",
+        )
+
+    def send_accept(self, *, sender_id: str, receiver_id: str, request_id: str, proposal_id: str, content: str) -> Message:
+        return self.send_message(
+            sender=sender_id,
+            receiver=receiver_id,
+            message_type=MessageType.ACCEPT,
+            payload={"request_id": request_id, "proposal_id": proposal_id, "content": content},
+            message_id=f"accept-{request_id}-{proposal_id}-{sender_id}",
+        )
+
+    def send_reject(self, *, sender_id: str, receiver_id: str, request_id: str, proposal_id: str, content: str) -> Message:
+        return self.send_message(
+            sender=sender_id,
+            receiver=receiver_id,
+            message_type=MessageType.REJECT,
+            payload={"request_id": request_id, "proposal_id": proposal_id, "reason": content},
+            message_id=f"reject-{request_id}-{proposal_id}-{sender_id}",
+        )
+
+    def create_agreement(
+        self,
+        *,
+        sender_id: str,
+        receiver_id: str,
+        request_id: str,
+        resource_name: str,
+        proposal_id: str,
+        valid: bool = True,
+    ) -> dict[str, Any]:
+        if not valid:
+            raise ValueError("Agreement is invalid")
+
+        agreement = {
+            "id": f"agreement-{request_id}-{proposal_id}",
+            "sender_id": sender_id,
+            "receiver_id": receiver_id,
+            "request_id": request_id,
+            "resource_name": resource_name,
+            "proposal_id": proposal_id,
+            "status": "agreed",
+        }
+        self.negotiation_state[request_id] = {"status": "agreed", "agreement": agreement}
+        self.send_message(
+            sender=sender_id,
+            receiver=receiver_id,
+            message_type=MessageType.AGREEMENT,
+            payload={"request_id": request_id, "resource_name": resource_name, "proposal_id": proposal_id},
+            message_id=f"agreement-{request_id}-{proposal_id}",
+        )
+        return agreement
+
+    def detect_conflicts(self) -> list[dict[str, Any]]:
+        by_resource: defaultdict[str, list[str]] = defaultdict(list)
+        for request in self.requests.values():
+            for resource_name in request.required_resources:
+                by_resource[resource_name].append(request.id)
+
+        conflicts: list[dict[str, Any]] = []
+        for resource_name, request_ids in by_resource.items():
+            unique = sorted(set(request_ids))
+            if len(unique) > 1:
+                conflict = {"resource_name": resource_name, "request_ids": unique, "status": "conflict"}
+                self.resource_conflicts[resource_name] = conflict
+                conflicts.append(conflict)
+        return conflicts
+
+    def record_unresolved_conflict(self, resource_name: str, request_ids: list[str], reason: str) -> dict[str, Any]:
+        conflict = {"resource_name": resource_name, "request_ids": list(request_ids), "status": "unresolved", "reason": reason}
+        self.resource_conflicts[resource_name] = conflict
+        return conflict
+
+    def resolve_conflict_for_resource(self, resource_name: str) -> dict[str, Any]:
+        conflict = self.resource_conflicts.get(resource_name)
+        if conflict is None:
+            return {"request_id": None, "resource_name": resource_name, "status": "no_conflict"}
+
+        requests = [self.requests[request_id] for request_id in conflict["request_ids"] if request_id in self.requests]
+        winner = sorted(requests, key=lambda request: (-self._priority_score(request), request.id))[0]
+        allocation = {"request_id": winner.id, "resource_name": resource_name, "agent_id": winner.requester_id, "status": "allocated"}
+        self.allocations[winner.id] = allocation
+        self.resource_allocations[resource_name] = winner.id
+        return allocation
+
+    def finalize_allocation(self, *, request_id: str, resource_name: str, agent_id: str, status: str = "allocated") -> dict[str, Any]:
+        allocation = {"request_id": request_id, "resource_name": resource_name, "agent_id": agent_id, "status": status}
+        self.allocations[request_id] = allocation
+        self.resource_allocations[resource_name] = request_id
+        return allocation
+
+    def get_final_allocation(self, request_id: str) -> dict[str, Any] | None:
+        return self.allocations.get(request_id)
+
+    def negotiate(
+        self,
+        *,
+        request: Request,
+        proposal: Proposal,
+        expected_value: float = 0.0,
+        max_budget: float = 0.0,
+        risk: float = 0.0,
+    ) -> dict[str, Any]:
+        if proposal is None:
+            raise ValueError("A proposal is required for peer-to-peer negotiation")
+
+        decision = self.negotiation_engine.strategy.decide(
+            request=request,
+            proposal=proposal,
+            expected_value=expected_value,
+            max_budget=max_budget,
+            risk=risk,
+        )
+
+        if decision in {ACCEPT, AGREEMENT}:
+            allocation = self.finalize_allocation(
+                request_id=request.id,
+                resource_name=next(iter(request.required_resources), "unknown"),
+                agent_id=proposal.agent_id,
+            )
+            return {"status": "success", "request_id": request.id, "proposal_id": proposal.id, "allocation": allocation}
+
+        return {"status": "failed", "request_id": request.id, "proposal_id": proposal.id, "allocation": None}
 
 
 class DecentralizedArchitecture:
