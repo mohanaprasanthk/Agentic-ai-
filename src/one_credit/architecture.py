@@ -5,6 +5,7 @@ import time
 from collections import defaultdict
 from typing import Any
 
+from one_credit.blackboard import Blackboard
 from one_credit.models import Agent, Proposal, Request, Resource
 from one_credit.negotiation import (
     ACCEPT,
@@ -771,6 +772,261 @@ class ParallelArchitecture(CentralizedArchitecture):
             max_budget=max_budget,
             risk=risk,
         )
+
+
+class BlackboardArchitecture:
+    """Shared-state coordination layer without a central manager."""
+
+    def __init__(self, *, strategy: Any | None = None) -> None:
+        self.agents: dict[str, Agent] = {}
+        self.resources: dict[str, Resource] = {}
+        self.requests: dict[str, Request] = {}
+        self.proposals: dict[str, Proposal] = {}
+        self.negotiation_engine = NegotiationEngine(strategy=strategy or UtilityMaximizingStrategy())
+        self.blackboard = Blackboard()
+
+    def register_agent(self, agent: Agent) -> Agent:
+        self.agents[agent.id] = agent
+        return agent
+
+    def register_resource(self, resource: Resource) -> Resource:
+        self.resources[resource.id] = resource
+        self.blackboard.register_resource_status(resource.name, status="available")
+        return resource
+
+    def register_resource_status(self, resource_name: str, status: str = "available", **metadata: Any) -> dict[str, Any]:
+        return self.blackboard.register_resource_status(resource_name, status=status, **metadata)
+
+    def get_resource_status(self, resource_name: str) -> dict[str, Any] | None:
+        return self.blackboard.resource_status.get(resource_name)
+
+    def create_request(self, request: Request) -> Request:
+        self.requests[request.id] = request
+        self.blackboard.register_request(request)
+        return request
+
+    def register_request(self, request: Request) -> Request:
+        return self.create_request(request)
+
+    def read_request(self, request_id: str) -> Request | None:
+        return self.blackboard.get_request(request_id)
+
+    def get_request(self, request_id: str) -> Request | None:
+        return self.read_request(request_id)
+
+    def read_requests(self) -> list[Request]:
+        return self.blackboard.get_requests()
+
+    def get_requests(self) -> list[Request]:
+        return self.read_requests()
+
+    def evaluate_proposal(
+        self,
+        *,
+        request: Request,
+        proposal: Proposal,
+        expected_value: float = 0.0,
+        max_budget: float = 0.0,
+        risk: float = 0.0,
+    ) -> NegotiationStep:
+        return self.negotiation_engine.strategy.decide(
+            request=request,
+            proposal=proposal,
+            expected_value=expected_value,
+            max_budget=max_budget,
+            risk=risk,
+        )
+
+    def start_negotiation(
+        self,
+        *,
+        request: Request,
+        proposal: Proposal,
+        expected_value: float = 0.0,
+        max_budget: float = 0.0,
+        risk: float = 0.0,
+    ) -> NegotiationMessage:
+        return self.negotiation_engine.negotiate(
+            request=request,
+            proposal=proposal,
+            expected_value=expected_value,
+            max_budget=max_budget,
+            risk=risk,
+        )
+
+    def respond_to_message(
+        self,
+        message: NegotiationMessage,
+        *,
+        next_step: NegotiationStep,
+        actor_id: str,
+        content: str | None = None,
+        price: float | None = None,
+    ) -> NegotiationMessage:
+        return self.negotiation_engine.respond(
+            message,
+            next_step=next_step,
+            actor_id=actor_id,
+            content=content,
+            price=price,
+        )
+
+    def detect_conflicts(self) -> list[dict[str, Any]]:
+        by_resource: defaultdict[str, list[str]] = defaultdict(list)
+        for request in self.blackboard.get_requests():
+            for resource_name in request.required_resources:
+                by_resource[resource_name].append(request.id)
+
+        conflicts: list[dict[str, Any]] = []
+        for resource_name, request_ids in by_resource.items():
+            unique_ids = sorted(set(request_ids))
+            if len(unique_ids) > 1:
+                conflict = {"resource_name": resource_name, "request_ids": unique_ids, "status": "conflict"}
+                self.blackboard.register_conflict(conflict)
+                conflicts.append(conflict)
+        return conflicts
+
+    def record_unresolved_conflict(self, resource_name: str, request_ids: list[str], reason: str) -> dict[str, Any]:
+        conflict = {
+            "resource_name": resource_name,
+            "request_ids": list(request_ids),
+            "status": "unresolved",
+            "reason": reason,
+        }
+        self.blackboard.register_conflict(conflict)
+        return conflict
+
+    def publish_proposal(self, proposal: Proposal) -> Proposal:
+        self.proposals[proposal.id] = proposal
+        self.blackboard.register_proposal(proposal)
+        return proposal
+
+    def read_proposals_for_agent(self, agent_id: str) -> list[Proposal]:
+        return [proposal for proposal in self.blackboard.proposals.values() if proposal.agent_id == agent_id]
+
+    def read_proposals(self) -> list[Proposal]:
+        return list(self.blackboard.proposals.values())
+
+    def publish_counteroffer(
+        self,
+        *,
+        request_id: str,
+        proposal_id: str,
+        from_agent_id: str,
+        to_agent_id: str,
+        content: str,
+        price: float | None = None,
+    ) -> dict[str, Any]:
+        counteroffer = {
+            "id": f"counteroffer-{request_id}-{proposal_id}-{from_agent_id}",
+            "request_id": request_id,
+            "proposal_id": proposal_id,
+            "from_agent_id": from_agent_id,
+            "to_agent_id": to_agent_id,
+            "content": content,
+            "price": price,
+            "status": "countered",
+        }
+        return self.blackboard.register_counteroffer(counteroffer)
+
+    def read_counteroffers_for_agent(self, agent_id: str) -> list[dict[str, Any]]:
+        values = list(self.blackboard.counteroffers.values())
+        return [counteroffer for counteroffer in values if counteroffer.get("from_agent_id") == agent_id or counteroffer.get("to_agent_id") == agent_id]
+
+    def publish_agreement(
+        self,
+        *,
+        request_id: str,
+        resource_name: str,
+        agent_id: str,
+        proposal_id: str,
+        content: str,
+    ) -> dict[str, Any]:
+        agreement = {
+            "id": f"agreement-{request_id}-{agent_id}",
+            "request_id": request_id,
+            "resource_name": resource_name,
+            "agent_id": agent_id,
+            "proposal_id": proposal_id,
+            "content": content,
+            "status": "agreed",
+        }
+        self.blackboard.register_agreement(agreement)
+        return agreement
+
+    def record_negotiation_event(self, event_type: str, **payload: Any) -> dict[str, Any]:
+        return self.blackboard.record_event(event_type, **payload)
+
+    def inspect_blackboard(self) -> dict[str, Any]:
+        return self.blackboard.inspect_state()
+
+    def finalize_allocation(
+        self,
+        *,
+        request_id: str,
+        resource_name: str,
+        agent_id: str,
+        status: str = "allocated",
+        **metadata: Any,
+    ) -> dict[str, Any]:
+        allocation = self.blackboard.finalize_allocation(
+            request_id=request_id,
+            resource_name=resource_name,
+            agent_id=agent_id,
+            status=status,
+            **metadata,
+        )
+        return allocation
+
+    def get_final_allocation(self, request_id: str) -> dict[str, Any] | None:
+        return self.blackboard.get_final_allocation(request_id)
+
+    def negotiate(
+        self,
+        *,
+        request: Request,
+        proposal: Proposal,
+        expected_value: float = 0.0,
+        max_budget: float = 0.0,
+        risk: float = 0.0,
+    ) -> dict[str, Any]:
+        if proposal is None:
+            raise ValueError("A proposal is required for blackboard negotiation.")
+
+        message = self.start_negotiation(
+            request=request,
+            proposal=proposal,
+            expected_value=expected_value,
+            max_budget=max_budget,
+            risk=risk,
+        )
+        decision = self.evaluate_proposal(
+            request=request,
+            proposal=proposal,
+            expected_value=expected_value,
+            max_budget=max_budget,
+            risk=risk,
+        )
+        self.record_negotiation_event("proposal", request_id=request.id, proposal_id=proposal.id, actor_id=proposal.agent_id, content=message.content)
+
+        if decision in {ACCEPT, AGREEMENT}:
+            agreement = self.publish_agreement(
+                request_id=request.id,
+                resource_name=next(iter(request.required_resources), "unknown"),
+                agent_id=proposal.agent_id,
+                proposal_id=proposal.id,
+                content="Agreement reached.",
+            )
+            allocation = self.finalize_allocation(
+                request_id=request.id,
+                resource_name=next(iter(request.required_resources), "unknown"),
+                agent_id=proposal.agent_id,
+            )
+            self.record_negotiation_event("agreement", request_id=request.id, proposal_id=proposal.id, actor_id=proposal.agent_id, content=agreement["content"])
+            return {"status": "success", "request_id": request.id, "proposal_id": proposal.id, "allocation": allocation, "agreement": agreement}
+
+        self.record_negotiation_event("rejection", request_id=request.id, proposal_id=proposal.id, actor_id=proposal.agent_id, content="Negotiation failed.")
+        return {"status": "failed", "request_id": request.id, "proposal_id": proposal.id, "allocation": None, "reason": "Negotiation failed."}
 
 
 class DecentralizedArchitecture:

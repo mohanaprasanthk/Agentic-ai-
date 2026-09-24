@@ -1,12 +1,14 @@
 """One Credit backend package."""
 
 from one_credit.architecture import (
+    BlackboardArchitecture,
     CentralizedArchitecture,
     DecentralizedArchitecture,
     HierarchicalArchitecture,
     ParallelArchitecture,
     SequentialArchitecture,
 )
+from one_credit.blackboard import Blackboard
 from one_credit.models import Agent, Proposal, Request, Resource
 from one_credit.negotiation import (
     ACCEPT,
@@ -26,6 +28,8 @@ __all__ = [
     "ACCEPT",
     "AGREEMENT",
     "Agent",
+    "Blackboard",
+    "BlackboardArchitecture",
     "CentralizedArchitecture",
     "COUNTEROFFER",
     "DecentralizedArchitecture",
