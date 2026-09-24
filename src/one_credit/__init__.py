@@ -24,11 +24,13 @@ from one_credit.negotiation import (
     UtilityMaximizingStrategy,
     calculate_utility,
 )
+from one_credit.simulation import ArchitectureType, Scenario, SimulationEngine, SimulationResult
 
 __all__ = [
     "ACCEPT",
     "AGREEMENT",
     "Agent",
+    "ArchitectureType",
     "Blackboard",
     "BlackboardArchitecture",
     "CentralizedArchitecture",
@@ -48,7 +50,10 @@ __all__ = [
     "REQUEST",
     "Request",
     "Resource",
+    "Scenario",
     "SequentialArchitecture",
+    "SimulationEngine",
+    "SimulationResult",
     "UtilityMaximizingStrategy",
     "calculate_utility",
 ]
