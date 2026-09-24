@@ -1,6 +1,12 @@
 """One Credit backend package."""
 
-from one_credit.architecture import CentralizedArchitecture, DecentralizedArchitecture, HierarchicalArchitecture
+from one_credit.architecture import (
+    CentralizedArchitecture,
+    DecentralizedArchitecture,
+    HierarchicalArchitecture,
+    ParallelArchitecture,
+    SequentialArchitecture,
+)
 from one_credit.models import Agent, Proposal, Request, Resource
 from one_credit.negotiation import (
     ACCEPT,
@@ -27,12 +33,14 @@ __all__ = [
     "NegotiationEngine",
     "NegotiationMessage",
     "NegotiationStep",
+    "ParallelArchitecture",
     "PROPOSAL",
     "Proposal",
     "REJECT",
     "REQUEST",
     "Request",
     "Resource",
+    "SequentialArchitecture",
     "UtilityMaximizingStrategy",
     "calculate_utility",
 ]

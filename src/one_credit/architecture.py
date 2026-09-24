@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -138,22 +140,637 @@ class CentralizedArchitecture:
         )
 
 
-class HierarchicalArchitecture:
-    """A three-level hierarchy where local managers resolve requests and escalate unresolved conflicts upward."""
+class SequentialArchitecture:
+    """A strictly ordered negotiation pipeline for request handling and allocation."""
+
+    STAGES = [
+        "request_validation",
+        "priority_evaluation",
+        "resource_availability_check",
+        "conflict_detection",
+        "negotiation",
+        "allocation",
+        "confirmation",
+    ]
 
     def __init__(self, *, strategy: Any | None = None) -> None:
         self.agents: dict[str, Agent] = {}
-        self.managers: dict[str, Agent] = {}
         self.resources: dict[str, Resource] = {}
         self.requests: dict[str, Request] = {}
         self.proposals: dict[str, Proposal] = {}
-        self.request_queues: defaultdict[str, list[str]] = defaultdict(list)
         self.allocations: dict[str, dict[str, Any]] = {}
         self.negotiation_engine = NegotiationEngine(strategy=strategy or UtilityMaximizingStrategy())
+        self.stage_results: dict[str, Any] = {}
+        self.stage_processing_times: dict[str, float] = {}
         self.negotiation_events: list[dict[str, Any]] = []
-        self.escalation_events: list[dict[str, Any]] = []
         self.events: list[dict[str, Any]] = []
-        self.campus_manager: Agent | None = None
+        self.latest_result: dict[str, Any] | None = None
+
+    def _record_stage(self, stage_name: str, result: Any, start_time: float) -> Any:
+        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+        self.stage_results[stage_name] = result
+        self.stage_processing_times[stage_name] = round(elapsed_ms, 6)
+        self.events.append({"stage": stage_name, "result": result, "duration_ms": self.stage_processing_times[stage_name]})
+        return result
+
+    def register_agent(self, agent: Agent) -> Agent:
+        self.agents[agent.id] = agent
+        return agent
+
+    def register_resource(self, resource: Resource) -> Resource:
+        self.resources[resource.id] = resource
+        return resource
+
+    def create_request(self, request: Request) -> Request:
+        self.requests[request.id] = request
+        return request
+
+    def create_proposal(self, proposal: Proposal) -> Proposal:
+        self.proposals[proposal.id] = proposal
+        return proposal
+
+    def get_agent(self, agent_id: str) -> Agent | None:
+        return self.agents.get(agent_id)
+
+    def get_resource(self, resource_id: str) -> Resource | None:
+        return self.resources.get(resource_id)
+
+    def get_request(self, request_id: str) -> Request | None:
+        return self.requests.get(request_id)
+
+    def get_proposal(self, proposal_id: str) -> Proposal | None:
+        return self.proposals.get(proposal_id)
+
+    def validate_request(self, request: Request) -> dict[str, Any]:
+        valid = bool(request.title and request.requester_id)
+        result = {
+            "stage": "request_validation",
+            "status": "passed" if valid else "failed",
+            "request_id": request.id,
+            "valid": valid,
+            "reason": "Request is valid." if valid else "Request validation failed.",
+        }
+        return result
+
+    def evaluate_priority(self, request: Request) -> dict[str, Any]:
+        priority_scores = {"low": 1, "normal": 2, "medium": 3, "high": 4, "critical": 5}
+        score = priority_scores.get(str(request.priority).lower(), 2)
+        return {
+            "stage": "priority_evaluation",
+            "status": "passed",
+            "request_id": request.id,
+            "priority": request.priority,
+            "score": score,
+            "decision": "continue",
+        }
+
+    def check_resource_availability(self, *, request: Request, resource_name: str | None = None) -> dict[str, Any]:
+        target = resource_name or next(iter(request.required_resources), None)
+        if target is None:
+            return {"stage": "resource_availability_check", "status": "failed", "request_id": request.id, "resource_name": None, "available": False, "reason": "No resource specified."}
+
+        resource = next((candidate for candidate in self.resources.values() if candidate.name.lower() == target.lower()), None)
+        available = resource is not None
+        return {
+            "stage": "resource_availability_check",
+            "status": "passed" if available else "failed",
+            "request_id": request.id,
+            "resource_name": target,
+            "available": available,
+            "reason": "Resource is available." if available else "Resource is unavailable.",
+        }
+
+    def detect_conflicts(self, *, resource_name: str | None = None) -> list[dict[str, Any]]:
+        resource_filter = (resource_name or "").lower()
+        conflicts: list[dict[str, Any]] = []
+        by_resource: defaultdict[str, list[str]] = defaultdict(list)
+
+        for request in self.requests.values():
+            for required in request.required_resources:
+                if resource_filter and required.lower() != resource_filter:
+                    continue
+                by_resource[required.lower()].append(request.id)
+
+        for resource_key, request_ids in by_resource.items():
+            unique_ids = sorted(set(request_ids))
+            if len(unique_ids) > 1:
+                conflicts.append({"resource_name": resource_key, "request_ids": unique_ids, "status": "conflict"})
+
+        return conflicts
+
+    def negotiate(
+        self,
+        *,
+        request: Request,
+        proposal: Proposal | None = None,
+        expected_value: float = 0.0,
+        max_budget: float = 0.0,
+        risk: float = 0.0,
+    ) -> dict[str, Any]:
+        if proposal is None:
+            candidate_agent = next(iter(self.agents.values()), None)
+            if candidate_agent is None:
+                return {"stage": "negotiation", "status": "failed", "request_id": request.id, "reason": "No agent available to negotiate."}
+            resource_name = next(iter(request.required_resources), "resource")
+            proposal = Proposal(
+                id=f"{request.id}-{candidate_agent.id}-proposal",
+                request_id=request.id,
+                agent_id=candidate_agent.id,
+                summary=f"Provide {resource_name} for this request.",
+                price=0.0,
+            )
+            self.proposals[proposal.id] = proposal
+
+        first_message = self.negotiation_engine.negotiate(
+            request=request,
+            proposal=proposal,
+            expected_value=expected_value,
+            max_budget=max_budget,
+            risk=risk,
+        )
+        self.negotiation_events.append({
+            "type": "proposal",
+            "message_id": first_message.id,
+            "request_id": request.id,
+            "proposal_id": proposal.id,
+            "actor_id": proposal.agent_id,
+            "content": first_message.content,
+            "price": first_message.price,
+        })
+
+        decision = self.negotiation_engine.strategy.decide(
+            request=request,
+            proposal=proposal,
+            expected_value=expected_value,
+            max_budget=max_budget,
+            risk=risk,
+        )
+        if decision in {ACCEPT, AGREEMENT}:
+            response = self.negotiation_engine.respond(
+                first_message,
+                next_step=AGREEMENT,
+                actor_id=request.requester_id,
+                content="Agreement reached.",
+                price=proposal.price,
+            )
+            self.negotiation_events.append({
+                "type": "agreement",
+                "message_id": response.id,
+                "request_id": request.id,
+                "proposal_id": proposal.id,
+                "actor_id": response.actor_id,
+                "content": response.content,
+                "price": response.price,
+            })
+            return {"stage": "negotiation", "status": "passed", "request_id": request.id, "proposal_id": proposal.id, "decision": decision.value, "message": response.content}
+
+        response = self.negotiation_engine.respond(
+            first_message,
+            next_step=NegotiationStep.REJECT,
+            actor_id=request.requester_id,
+            content="Negotiation failed.",
+            price=proposal.price,
+        )
+        self.negotiation_events.append({
+            "type": "rejection",
+            "message_id": response.id,
+            "request_id": request.id,
+            "proposal_id": proposal.id,
+            "actor_id": response.actor_id,
+            "content": response.content,
+            "price": response.price,
+        })
+        return {"stage": "negotiation", "status": "failed", "request_id": request.id, "proposal_id": proposal.id, "decision": decision.value, "reason": "Negotiation failed."}
+
+    def allocate_resource(
+        self,
+        *,
+        request: Request,
+        resource_name: str | None = None,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        target = resource_name or next(iter(request.required_resources), "unknown")
+        owner = agent_id or request.requester_id
+        allocation = {"request_id": request.id, "resource_name": target, "agent_id": owner, "status": "allocated"}
+        self.allocations[request.id] = allocation
+        return {"stage": "allocation", "status": "passed", "allocation": allocation}
+
+    def confirm_allocation(self, *, request: Request, allocation: dict[str, Any]) -> dict[str, Any]:
+        return {"stage": "confirmation", "status": "passed", "request_id": request.id, "allocation": allocation, "message": "Allocation confirmed."}
+
+    def run_pipeline(
+        self,
+        *,
+        request: Request,
+        resource_name: str | None = None,
+        proposal: Proposal | None = None,
+        agent_id: str | None = None,
+        expected_value: float = 0.0,
+        max_budget: float = 0.0,
+        risk: float = 0.0,
+    ) -> dict[str, Any]:
+        self.stage_results = {}
+        self.stage_processing_times = {}
+        self.negotiation_events = []
+        self.events = []
+        self.requests[request.id] = request
+
+        final_allocation: dict[str, Any] | None = None
+        overall_result = "success"
+
+        for stage_name in self.STAGES:
+            start_time = time.perf_counter()
+            if stage_name == "request_validation":
+                stage_result = self.validate_request(request)
+                self._record_stage(stage_name, stage_result, start_time)
+                if stage_result["status"] != "passed":
+                    overall_result = "failed"
+                    break
+                continue
+
+            if stage_name == "priority_evaluation":
+                stage_result = self.evaluate_priority(request)
+                self._record_stage(stage_name, stage_result, start_time)
+                continue
+
+            if stage_name == "resource_availability_check":
+                stage_result = self.check_resource_availability(request=request, resource_name=resource_name)
+                self._record_stage(stage_name, stage_result, start_time)
+                if stage_result["status"] != "passed":
+                    overall_result = "failed"
+                    break
+                continue
+
+            if stage_name == "conflict_detection":
+                resource_to_check = resource_name or next(iter(request.required_resources), None)
+                conflicts = self.detect_conflicts(resource_name=resource_to_check)
+                stage_result = {
+                    "stage": "conflict_detection",
+                    "status": "passed" if not conflicts else "conflict",
+                    "request_id": request.id,
+                    "resource_name": resource_to_check,
+                    "conflicts": conflicts,
+                    "reason": "No conflict detected." if not conflicts else "Conflict detected.",
+                }
+                self._record_stage(stage_name, stage_result, start_time)
+                continue
+
+            if stage_name == "negotiation":
+                resource_to_check = resource_name or next(iter(request.required_resources), None)
+                conflicts = self.detect_conflicts(resource_name=resource_to_check)
+                if not conflicts:
+                    stage_result = {"stage": "negotiation", "status": "skipped", "request_id": request.id, "resource_name": resource_to_check, "reason": "No conflict detected; negotiation skipped."}
+                    self._record_stage(stage_name, stage_result, start_time)
+                    continue
+
+                stage_result = self.negotiate(
+                    request=request,
+                    proposal=proposal,
+                    expected_value=expected_value,
+                    max_budget=max_budget,
+                    risk=risk,
+                )
+                self._record_stage(stage_name, stage_result, start_time)
+                if stage_result["status"] != "passed":
+                    overall_result = "failed"
+                    break
+                continue
+
+            if stage_name == "allocation":
+                if overall_result == "failed":
+                    break
+                resource_to_check = resource_name or next(iter(request.required_resources), None)
+                stage_result = self.allocate_resource(request=request, resource_name=resource_to_check, agent_id=agent_id)
+                self._record_stage(stage_name, stage_result, start_time)
+                final_allocation = stage_result["allocation"]
+                continue
+
+            if stage_name == "confirmation":
+                if final_allocation is None:
+                    stage_result = {"stage": "confirmation", "status": "skipped", "request_id": request.id, "reason": "No allocation to confirm."}
+                    self._record_stage(stage_name, stage_result, start_time)
+                    overall_result = "failed"
+                    break
+                stage_result = self.confirm_allocation(request=request, allocation=final_allocation)
+                self._record_stage(stage_name, stage_result, start_time)
+
+        pipeline_result = {
+            "final_allocation": final_allocation,
+            "overall_result": overall_result,
+            "stage_results": self.stage_results,
+            "stage_processing_times": self.stage_processing_times,
+            "negotiation_events": self.negotiation_events,
+        }
+        self.latest_result = pipeline_result
+        return pipeline_result
+
+    def process_request(self, *, request: Request, resource_name: str | None = None, proposal: Proposal | None = None, agent_id: str | None = None, expected_value: float = 0.0, max_budget: float = 0.0, risk: float = 0.0) -> dict[str, Any]:
+        return self.run_pipeline(
+            request=request,
+            resource_name=resource_name,
+            proposal=proposal,
+            agent_id=agent_id,
+            expected_value=expected_value,
+            max_budget=max_budget,
+            risk=risk,
+        )
+
+    def execute_pipeline(self, *, request: Request, resource_name: str | None = None, proposal: Proposal | None = None, agent_id: str | None = None, expected_value: float = 0.0, max_budget: float = 0.0, risk: float = 0.0) -> dict[str, Any]:
+        return self.run_pipeline(
+            request=request,
+            resource_name=resource_name,
+            proposal=proposal,
+            agent_id=agent_id,
+            expected_value=expected_value,
+            max_budget=max_budget,
+            risk=risk,
+        )
+
+
+class ParallelArchitecture(CentralizedArchitecture):
+    """Concurrent negotiation coordinator with resource-level synchronization."""
+
+    def __init__(self, *, strategy: Any | None = None) -> None:
+        super().__init__(strategy=strategy or UtilityMaximizingStrategy())
+        self.allocations: dict[str, dict[str, Any]] = {}
+        self.resource_allocations: dict[str, str] = {}
+        self.resource_locks: dict[str, asyncio.Lock] = {}
+        self.negotiation_events: list[dict[str, Any]] = []
+        self.events: list[dict[str, Any]] = []
+        self.negotiation_records: list[dict[str, Any]] = []
+
+    def _resource_key(self, resource_name: str | None) -> str:
+        return (resource_name or "unknown").strip().lower()
+
+    def _request_sort_key(self, request: Request) -> tuple[int, str]:
+        priority_order = {"critical": 5, "high": 4, "medium": 3, "normal": 2, "low": 1}
+        priority_score = priority_order.get(str(request.priority).lower(), 2)
+        return (-priority_score, request.id)
+
+    def _resource_lock(self, resource_name: str | None) -> asyncio.Lock:
+        key = self._resource_key(resource_name)
+        if key not in self.resource_locks:
+            self.resource_locks[key] = asyncio.Lock()
+        return self.resource_locks[key]
+
+    def _requests_for_resource(self, resource_name: str | None) -> list[Request]:
+        key = self._resource_key(resource_name)
+        candidates = []
+        for request in self.requests.values():
+            required = {self._resource_key(item) for item in request.required_resources}
+            if key in required:
+                candidates.append(request)
+        return sorted(candidates, key=self._request_sort_key)
+
+    async def allocate_resource(
+        self,
+        *,
+        request: Request,
+        resource_name: str | None = None,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        target = resource_name or next(iter(request.required_resources), "unknown")
+        lock = self._resource_lock(target)
+
+        async with lock:
+            ordered_requests = self._requests_for_resource(target)
+            if ordered_requests and ordered_requests[0].id != request.id:
+                return {
+                    "status": "failed",
+                    "request_id": request.id,
+                    "resource_name": target,
+                    "allocation": None,
+                    "reason": "Resource is reserved for a higher-priority request.",
+                }
+
+            if self.resource_allocations.get(target) and self.resource_allocations[target] != request.id:
+                return {
+                    "status": "failed",
+                    "request_id": request.id,
+                    "resource_name": target,
+                    "allocation": None,
+                    "reason": "Resource is already allocated to another request.",
+                }
+
+            allocation = {
+                "request_id": request.id,
+                "resource_name": target,
+                "agent_id": agent_id or request.requester_id,
+                "status": "allocated",
+            }
+            self.allocations[request.id] = allocation
+            self.resource_allocations[target] = request.id
+            request.status = "allocated"
+            return {
+                "status": "passed",
+                "request_id": request.id,
+                "resource_name": target,
+                "allocation": allocation,
+            }
+
+    async def _run_single_negotiation(
+        self,
+        *,
+        request: Request,
+        proposal: Proposal | None = None,
+        expected_value: float = 0.0,
+        max_budget: float = 0.0,
+        risk: float = 0.0,
+    ) -> dict[str, Any]:
+        start_time = time.perf_counter()
+        messages: list[dict[str, Any]] = []
+
+        if proposal is not None and expected_value <= 0.0:
+            expected_value = max(100.0, (proposal.price or 0.0) + 10.0)
+        if proposal is not None and max_budget <= 0.0:
+            max_budget = max(100.0, (proposal.price or 0.0) + 10.0)
+
+        if proposal is None:
+            candidate = next(iter(sorted(self.agents.values(), key=lambda agent: agent.id)), None)
+            if candidate is None:
+                end_time = time.perf_counter()
+                record = {
+                    "request_id": request.id,
+                    "resource_name": next(iter(request.required_resources), "unknown"),
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "duration_seconds": end_time - start_time,
+                    "result": "failed",
+                    "allocation": None,
+                    "messages": messages,
+                    "events": messages,
+                    "reason": "No agent available to negotiate.",
+                }
+                self.negotiation_records.append(record)
+                return record
+
+            resource_name = next(iter(request.required_resources), "resource")
+            proposal = Proposal(
+                id=f"{request.id}-{candidate.id}-proposal",
+                request_id=request.id,
+                agent_id=candidate.id,
+                summary=f"Provide {resource_name} for {request.title}.",
+                price=0.0,
+            )
+            self.proposals[proposal.id] = proposal
+
+        self.requests[request.id] = request
+        first_message = self.negotiation_engine.negotiate(
+            request=request,
+            proposal=proposal,
+            expected_value=expected_value,
+            max_budget=max_budget,
+            risk=risk,
+        )
+        message_event = {
+            "type": "proposal",
+            "message_id": first_message.id,
+            "request_id": request.id,
+            "proposal_id": proposal.id,
+            "actor_id": proposal.agent_id,
+            "content": first_message.content,
+            "price": first_message.price,
+        }
+        self.negotiation_events.append(message_event)
+        self.events.append(message_event)
+        messages.append(message_event)
+
+        decision = self.negotiation_engine.strategy.decide(
+            request=request,
+            proposal=proposal,
+            expected_value=expected_value,
+            max_budget=max_budget,
+            risk=risk,
+        )
+
+        if decision in {ACCEPT, AGREEMENT}:
+            response = self.negotiation_engine.respond(
+                first_message,
+                next_step=AGREEMENT,
+                actor_id=request.requester_id,
+                content="Agreement reached.",
+                price=proposal.price,
+            )
+            response_event = {
+                "type": "agreement",
+                "message_id": response.id,
+                "request_id": request.id,
+                "proposal_id": proposal.id,
+                "actor_id": response.actor_id,
+                "content": response.content,
+                "price": response.price,
+            }
+            self.negotiation_events.append(response_event)
+            self.events.append(response_event)
+            messages.append(response_event)
+
+            allocation_result = await self.allocate_resource(
+                request=request,
+                resource_name=next(iter(request.required_resources), "unknown"),
+                agent_id=proposal.agent_id,
+            )
+            end_time = time.perf_counter()
+            record = {
+                "request_id": request.id,
+                "resource_name": next(iter(request.required_resources), "unknown"),
+                "start_time": start_time,
+                "end_time": end_time,
+                "duration_seconds": end_time - start_time,
+                "result": "success" if allocation_result["status"] == "passed" else "failed",
+                "allocation": allocation_result.get("allocation"),
+                "messages": messages,
+                "events": messages,
+                "decision": decision.value,
+            }
+            self.negotiation_records.append(record)
+            return record
+
+        response = self.negotiation_engine.respond(
+            first_message,
+            next_step=NegotiationStep.REJECT,
+            actor_id=request.requester_id,
+            content="Negotiation failed.",
+            price=proposal.price,
+        )
+        response_event = {
+            "type": "rejection",
+            "message_id": response.id,
+            "request_id": request.id,
+            "proposal_id": proposal.id,
+            "actor_id": response.actor_id,
+            "content": response.content,
+            "price": response.price,
+        }
+        self.negotiation_events.append(response_event)
+        self.events.append(response_event)
+        messages.append(response_event)
+
+        end_time = time.perf_counter()
+        record = {
+            "request_id": request.id,
+            "resource_name": next(iter(request.required_resources), "unknown"),
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration_seconds": end_time - start_time,
+            "result": "failed",
+            "allocation": None,
+            "messages": messages,
+            "events": messages,
+            "decision": decision.value,
+            "reason": "Negotiation failed.",
+        }
+        self.negotiation_records.append(record)
+        return record
+
+    async def execute_negotiations(
+        self,
+        *,
+        requests: list[Request] | None = None,
+        proposals: dict[str, Proposal] | None = None,
+    ) -> list[dict[str, Any]]:
+        requests_to_process = list(requests) if requests is not None else list(self.requests.values())
+        proposals_by_id = proposals or {}
+        ordered = sorted(requests_to_process, key=self._request_sort_key)
+        tasks = [
+            asyncio.create_task(self._run_single_negotiation(request=request, proposal=proposals_by_id.get(request.id)))
+            for request in ordered
+        ]
+        if not tasks:
+            return []
+        return list(await asyncio.gather(*tasks))
+
+    async def execute_concurrently(
+        self,
+        *,
+        requests: list[Request] | None = None,
+        proposals: dict[str, Proposal] | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self.execute_negotiations(requests=requests, proposals=proposals)
+
+    async def run_parallel(
+        self,
+        *,
+        requests: list[Request] | None = None,
+        proposals: dict[str, Proposal] | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self.execute_negotiations(requests=requests, proposals=proposals)
+
+    async def process_request(
+        self,
+        *,
+        request: Request,
+        proposal: Proposal | None = None,
+        expected_value: float = 0.0,
+        max_budget: float = 0.0,
+        risk: float = 0.0,
+    ) -> dict[str, Any]:
+        return await self._run_single_negotiation(
+            request=request,
+            proposal=proposal,
+            expected_value=expected_value,
+            max_budget=max_budget,
+            risk=risk,
+        )
 
 
 class DecentralizedArchitecture:
