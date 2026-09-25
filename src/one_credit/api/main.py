@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from one_credit.api.schemas import HealthResponse
@@ -18,6 +19,18 @@ def create_app() -> FastAPI:
         title="One Credit API",
         version="0.1.0",
         description="REST API for agent, resource, simulation, metrics, and architecture comparison workflows.",
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:4173",
+            "http://localhost:5173",
+            "http://127.0.0.1:4173",
+            "http://127.0.0.1:5173",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     def _validate_scenario_payload(payload: Any) -> dict[str, Any]:
