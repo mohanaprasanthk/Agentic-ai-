@@ -9,7 +9,13 @@ from one_credit.architecture import (
     PeerToPeerArchitecture,
     SequentialArchitecture,
 )
+from one_credit.architecture_comparison import (
+    ArchitectureComparisonEngine,
+    ArchitectureComparisonResult,
+    ArchitectureExecutionResult,
+)
 from one_credit.blackboard import Blackboard
+from one_credit.generator import ScenarioGenerator, ScenarioGeneratorConfig
 from one_credit.metrics import MetricsEngine, MetricsResult
 from one_credit.models import Agent, Message, MessageType, Proposal, Request, Resource
 from one_credit.negotiation import (
@@ -31,6 +37,9 @@ __all__ = [
     "ACCEPT",
     "AGREEMENT",
     "Agent",
+    "ArchitectureComparisonEngine",
+    "ArchitectureComparisonResult",
+    "ArchitectureExecutionResult",
     "ArchitectureType",
     "Blackboard",
     "BlackboardArchitecture",
@@ -54,6 +63,8 @@ __all__ = [
     "Request",
     "Resource",
     "Scenario",
+    "ScenarioGenerator",
+    "ScenarioGeneratorConfig",
     "SequentialArchitecture",
     "SimulationEngine",
     "SimulationResult",
