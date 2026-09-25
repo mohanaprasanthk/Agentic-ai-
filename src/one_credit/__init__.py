@@ -1,5 +1,6 @@
 """One Credit backend package."""
 
+from one_credit.api.main import app
 from one_credit.architecture import (
     BlackboardArchitecture,
     CentralizedArchitecture,
@@ -41,6 +42,7 @@ __all__ = [
     "ArchitectureComparisonResult",
     "ArchitectureExecutionResult",
     "ArchitectureType",
+    "app",
     "Blackboard",
     "BlackboardArchitecture",
     "CentralizedArchitecture",
