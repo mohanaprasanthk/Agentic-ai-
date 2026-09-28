@@ -31,3 +31,7 @@ htmlcov/
 !README.md
 !.github/
 !.github/copilot-instructions.md
+
+# Frontend build and dependencies
+frontend/node_modules/
+frontend/dist/

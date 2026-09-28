@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -96,9 +97,43 @@ class SimulationResult(BaseModel):
 class SimulationEngine:
     """Common runner that executes the same scenario across any supported architecture."""
 
-    def __init__(self, *, strategy: Any | None = None) -> None:
+    def __init__(self, *, strategy: Any | None = None, event_broker: Any | None = None) -> None:
         self.strategy = strategy
         self.scenario: Scenario | None = None
+        self.event_broker = event_broker
+
+    def _publish_event(self, simulation_id: str, raw_event: dict[str, Any]) -> None:
+        if self.event_broker is None:
+            return
+        event_type = raw_event.get("event_type") or raw_event.get("type") or raw_event.get("stage") or "PROPOSAL"
+        normalized_event = {
+            "event_type": str(event_type).upper(),
+            "simulation_id": simulation_id,
+            "timestamp": raw_event.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+            "agent_id": raw_event.get("agent_id") or raw_event.get("actor_id") or raw_event.get("requester_id"),
+            "resource_id": raw_event.get("resource_id") or raw_event.get("resource_name") or raw_event.get("resource_id"),
+            "message": raw_event.get("message") or raw_event.get("content") or raw_event.get("reason") or raw_event.get("status"),
+            "payload": {key: value for key, value in raw_event.items() if key not in {"event_type", "type", "stage", "timestamp", "agent_id", "actor_id", "requester_id", "resource_id", "resource_name", "message", "content", "reason", "status"}},
+        }
+        if normalized_event["event_type"] in {"REQUEST_VALIDATION", "NEGOTIATION"}:
+            normalized_event["event_type"] = "REQUEST" if normalized_event["event_type"] == "REQUEST_VALIDATION" else "PROPOSAL"
+        if normalized_event["event_type"] == "REJECTION":
+            normalized_event["event_type"] = "REJECT"
+        if normalized_event["event_type"] == "ACCEPTED":
+            normalized_event["event_type"] = "ACCEPT"
+        self.event_broker.publish_event_sync(simulation_id, normalized_event)
+
+    def _publish_lifecycle_event(self, simulation_id: str, event_type: str, payload: dict[str, Any] | None = None) -> None:
+        if self.event_broker is None:
+            return
+        event = {
+            "event_type": event_type,
+            "simulation_id": simulation_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "message": payload.get("message") if payload else "",
+            "payload": payload or {},
+        }
+        self.event_broker.publish_event_sync(simulation_id, event)
 
     def select_architecture(self, architecture: str | ArchitectureType) -> type:
         normalized = architecture.value if isinstance(architecture, Enum) else str(architecture).strip().upper()
@@ -365,6 +400,10 @@ class SimulationEngine:
             simulation_id=scenario.scenario_id,
         )
 
+        if self.event_broker is not None:
+            self.event_broker.register_simulation(result.simulation_id)
+            self._publish_lifecycle_event(result.simulation_id, "SIMULATION_STARTED", {"message": "Simulation started.", "architecture": architecture_name})
+
         try:
             self.validate_scenario(scenario)
             architecture_class = self.select_architecture(scenario.architecture)
@@ -390,14 +429,17 @@ class SimulationEngine:
                     )
                     negotiation_events.extend(events_for_request)
                     communication_messages.extend(messages_for_request)
+                    for event in events_for_request:
+                        self._publish_event(result.simulation_id, event)
+                    if response_payload:
+                        negotiation_events.append(response_payload)
+                        self._publish_event(result.simulation_id, response_payload)
                     if outcome.get("allocation"):
                         final_allocation[request.id] = outcome["allocation"]
                     if is_successful:
                         successful_negotiations.append(request.id)
                     else:
                         failed_negotiations.append(request.id)
-                    if response_payload:
-                        negotiation_events.append(response_payload)
                 except ValueError as exc:
                     failed_negotiations.append(request.id)
                     result.errors.append(f"Request {request.id} failed: {exc}")
@@ -416,11 +458,21 @@ class SimulationEngine:
             result.architecture = architecture_name
             if not result.errors and not successful_negotiations and failed_negotiations:
                 result.success = False
+
+            lifecycle_event_type = "SIMULATION_COMPLETED" if not result.errors else "SIMULATION_FAILED"
+            if self.event_broker is not None:
+                self._publish_lifecycle_event(
+                    result.simulation_id,
+                    lifecycle_event_type,
+                    {"message": "Simulation completed." if lifecycle_event_type == "SIMULATION_COMPLETED" else "Simulation failed.", "success": result.success, "architecture": architecture_name},
+                )
         except Exception as exc:  # pragma: no cover - defensive fallback for invalid scenarios
             result.success = False
             result.errors.append(str(exc))
             result.execution_time = time.perf_counter() - execution_start
             result.architecture = architecture_name
+            if self.event_broker is not None:
+                self._publish_lifecycle_event(result.simulation_id, "SIMULATION_FAILED", {"message": str(exc), "success": False, "architecture": architecture_name})
 
         return result
 

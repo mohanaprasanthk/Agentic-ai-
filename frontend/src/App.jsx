@@ -4,6 +4,7 @@ import AgentsPage from './pages/AgentsPage';
 import ResourcesPage from './pages/ResourcesPage';
 import SimulationPage from './pages/SimulationPage';
 import SimulationResultPage from './pages/SimulationResultPage';
+import LiveMonitorPage from './pages/LiveMonitorPage';
 import MetricsPage from './pages/MetricsPage';
 import ComparisonPage from './pages/ComparisonPage';
 
@@ -53,6 +54,7 @@ function AppLayout() {
             <Route path="/resources" element={<ResourcesPage />} />
             <Route path="/simulation" element={<SimulationPage />} />
             <Route path="/simulation/:id" element={<SimulationResultPage />} />
+            <Route path="/monitor/:simulation_id" element={<LiveMonitorPage />} />
             <Route path="/metrics/:id" element={<MetricsPage />} />
             <Route path="/comparison" element={<ComparisonPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />

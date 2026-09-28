@@ -192,4 +192,25 @@ describe('One Credit frontend', () => {
       expect(screen.getByRole('heading', { name: /^Architecture comparison$/i })).toBeInTheDocument();
     });
   });
+
+  it('renders the live monitor page and shows connection status', async () => {
+    window.history.pushState({}, '', '/monitor/sim-123');
+    const connectMock = vi.fn(() => ({
+      addEventListener: vi.fn(),
+      close: vi.fn(),
+      readyState: 1,
+    }));
+
+    vi.stubGlobal('WebSocket', connectMock);
+
+    render(
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>,
+    );
+
+    expect(await screen.findByText(/Live negotiation monitor/i)).toBeInTheDocument();
+    expect(screen.getByText(/Simulation ID/i)).toBeInTheDocument();
+    expect(screen.getByText(/sim-123/i)).toBeInTheDocument();
+  });
 });

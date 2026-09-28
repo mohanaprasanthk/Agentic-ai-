@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from one_credit.api.schemas import HealthResponse
 from one_credit.api.store import store
+from one_credit.api.websocket_broker import WebSocketEventBroker
 from one_credit.architecture_comparison import ArchitectureComparisonEngine
 from one_credit.metrics import MetricsEngine
 from one_credit.models import Agent, Resource
@@ -15,11 +17,13 @@ from one_credit.simulation import ArchitectureType, Scenario, SimulationEngine
 
 
 def create_app() -> FastAPI:
+    event_broker = WebSocketEventBroker()
     app = FastAPI(
         title="One Credit API",
         version="0.1.0",
         description="REST API for agent, resource, simulation, metrics, and architecture comparison workflows.",
     )
+    app.state.event_broker = event_broker
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -110,13 +114,58 @@ def create_app() -> FastAPI:
     async def create_resource(resource: Resource) -> Resource:
         return store.register_resource(resource)
 
+    @app.websocket("/ws/simulation/{simulation_id}")
+    async def simulation_websocket(websocket: WebSocket, simulation_id: str) -> None:
+        if not event_broker.is_known_simulation(simulation_id) and store.get_simulation(simulation_id) is None:
+            await websocket.close(code=4404)
+            return
+
+        await websocket.accept()
+        event_broker.subscribe(simulation_id, websocket)
+
+        try:
+            result = store.get_simulation(simulation_id)
+            if result is not None:
+                for event in result.negotiation_events:
+                    try:
+                        await websocket.send_json(WebSocketEventBroker.normalize_event(simulation_id, event))
+                    except Exception:
+                        continue
+                if result.errors:
+                    try:
+                        await websocket.send_json(
+                            WebSocketEventBroker.normalize_event(
+                                simulation_id,
+                                {"event_type": "SIMULATION_FAILED", "message": "; ".join(result.errors), "payload": {"success": result.success}},
+                            )
+                        )
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        await websocket.send_json(
+                            WebSocketEventBroker.normalize_event(
+                                simulation_id,
+                                {"event_type": "SIMULATION_COMPLETED", "message": "Simulation completed.", "payload": {"success": result.success}},
+                            )
+                        )
+                    except Exception:
+                        pass
+            await websocket.close()
+        except WebSocketDisconnect:
+            event_broker.unsubscribe(simulation_id, websocket)
+        except Exception:
+            event_broker.unsubscribe(simulation_id, websocket)
+
     @app.post("/api/simulation/run", response_model=dict[str, Any], tags=["simulation"])
     async def run_simulation(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             scenario = _coerce_scenario(payload)
             if "architecture" in payload and isinstance(payload["architecture"], (str, ArchitectureType)):
                 scenario = Scenario.model_validate({**scenario.model_dump(), "architecture": payload["architecture"]})
-            result = SimulationEngine().run(scenario)
+            event_broker.register_simulation(scenario.scenario_id)
+            event_broker.set_loop(asyncio.get_running_loop())
+            result = await asyncio.to_thread(SimulationEngine(event_broker=event_broker).run, scenario)
             store.store_simulation(result)
             return result.model_dump()
         except ValidationError as exc:

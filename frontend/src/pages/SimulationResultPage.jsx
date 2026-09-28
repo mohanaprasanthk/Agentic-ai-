@@ -73,9 +73,14 @@ export default function SimulationResultPage() {
           <p className="eyebrow">Simulation details</p>
           <h2>Simulation result</h2>
         </div>
-        <Link to={`/metrics/${result.simulation_id}`} className="secondary-button">
-          View metrics
-        </Link>
+        <div className="page-actions">
+          <Link to={`/monitor/${result.simulation_id}`} className="secondary-button">
+            Live Monitor
+          </Link>
+          <Link to={`/metrics/${result.simulation_id}`} className="secondary-button">
+            View metrics
+          </Link>
+        </div>
       </div>
 
       <div className="stats-grid compact">
